@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.so
+
+# Jupyter
+*.ipynb
+
+# macOS
+.DS_Store
+
+# Virtual env
+.venv/
+env/
+
+# Streamlit / app artifacts
+models/artifacts/
+data/uploaded_dataset.csv
+
+# Editor directories
+.vscode/
+.idea/
+
+# Logs
+*.log
