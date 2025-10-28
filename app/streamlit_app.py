@@ -141,6 +141,10 @@ def main():
         seed = st.number_input("Seed", min_value=0, value=st.session_state.get("seed", 42), step=1, key="seed_input")
         threshold = st.slider("Decision threshold", min_value=0.0, max_value=1.0, value=st.session_state.get("threshold", 0.5), key="threshold_input")
 
+        # Top-N tokens control moved to sidebar (shared)
+        top_n_sidebar = st.number_input("Top N tokens (overview)", min_value=5, max_value=50, value=st.session_state.get("top_n_tokens", 10), key="top_n_tokens_sidebar")
+        st.session_state["top_n_tokens"] = int(top_n_sidebar)
+
         # persist into session state so run_training can pick them up
         st.session_state["label_col"] = lbl_col
         st.session_state["text_col"] = txt_col
@@ -225,7 +229,7 @@ def main():
             try:
                 st.markdown("<div class='card'>", unsafe_allow_html=True)
                 st.markdown("<div class='section-title'>Top tokens by class</div>", unsafe_allow_html=True)
-                top_n = st.number_input("Top N tokens", min_value=5, max_value=50, value=10, key="top_n_tokens")
+                top_n = st.session_state.get("top_n_tokens", 10)
 
                 from collections import Counter as _Counter
                 import matplotlib.pyplot as plt
@@ -387,8 +391,9 @@ def main():
                                 p = r = f = 0.0
                             rows.append({"threshold": round(float(t), 2), "precision": round(float(p), 3), "recall": round(float(r), 3), "f1": round(float(f), 3)})
 
-                        df_metrics = _pd.DataFrame(rows)
-                        st.table(df_metrics)
+                        df_metrics = _pd.DataFrame(rows).set_index("threshold")
+                        # interactive line chart for precision/recall/f1
+                        st.line_chart(df_metrics)
                 else:
                     st.info("Model artifacts not found for threshold sweep.")
             except Exception as e:
