@@ -109,7 +109,11 @@ def main():
         data_dir.mkdir(parents=True, exist_ok=True)
         csv_files = sorted([p.name for p in data_dir.glob("*.csv")])
         options = ["-- upload new file --"] + csv_files
-        default_index = 1 if "sms_spam_no_header.csv" in csv_files else 0
+        # default directly to data/sms_spam_no_header.csv when present
+        if "sms_spam_no_header.csv" in options:
+            default_index = options.index("sms_spam_no_header.csv")
+        else:
+            default_index = 0
         choice = st.selectbox("Choose dataset", options, index=default_index)
 
         if choice == "-- upload new file --":
@@ -240,31 +244,28 @@ def main():
                 ham_top = cnt_ham.most_common(int(top_n))
                 spam_top = cnt_spam.most_common(int(top_n))
 
-                # prepare side-by-side horizontal bar charts
+                # prepare side-by-side charts using Streamlit native plotting for cloud compatibility
                 if ham_top or spam_top:
-                    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
-                    # ham chart
+                    col1, col2 = st.columns(2)
                     if ham_top:
-                        toks_h = [t for t, c in reversed(ham_top)]
-                        counts_h = [c for t, c in reversed(ham_top)]
-                        axes[0].barh(toks_h, counts_h, color="#2b8cbe")
-                        axes[0].set_title("Top tokens — ham")
-                        axes[0].invert_yaxis()
+                        import pandas as _pd
+                        ham_df = _pd.DataFrame(ham_top, columns=["token", "count"]).set_index("token")
+                        with col1:
+                            st.markdown("**Top tokens — ham**")
+                            st.bar_chart(ham_df)
                     else:
-                        axes[0].text(0.5, 0.5, "No ham tokens", ha="center")
+                        with col1:
+                            st.info("No ham tokens")
 
-                    # spam chart
                     if spam_top:
-                        toks_s = [t for t, c in reversed(spam_top)]
-                        counts_s = [c for t, c in reversed(spam_top)]
-                        axes[1].barh(toks_s, counts_s, color="#f03b20")
-                        axes[1].set_title("Top tokens — spam")
-                        axes[1].invert_yaxis()
+                        import pandas as _pd
+                        spam_df = _pd.DataFrame(spam_top, columns=["token", "count"]).set_index("token")
+                        with col2:
+                            st.markdown("**Top tokens — spam**")
+                            st.bar_chart(spam_df)
                     else:
-                        axes[1].text(0.5, 0.5, "No spam tokens", ha="center")
-
-                    st.pyplot(fig)
+                        with col2:
+                            st.info("No spam tokens")
                 else:
                     st.info("No tokens found to display top tokens by class.")
 
@@ -315,16 +316,12 @@ def main():
             cm = report.get("confusion_matrix")
             if cm:
                 try:
-                    import matplotlib.pyplot as plt
-                    import numpy as np
-
-                    fig, ax = plt.subplots()
-                    im = ax.imshow(np.array(cm), cmap="Blues")
-                    ax.set_xlabel("Predicted")
-                    ax.set_ylabel("Actual")
-                    for (i, j), z in np.ndenumerate(np.array(cm)):
-                        ax.text(j, i, str(z), ha="center", va="center")
-                    st.pyplot(fig)
+                    # display confusion matrix as a simple table for cloud compatibility
+                    import pandas as _pd
+                    cm_arr = cm
+                    cm_df = _pd.DataFrame(cm_arr, index=["actual_ham", "actual_spam"], columns=["pred_ham", "pred_spam"])
+                    st.markdown("**Confusion matrix**")
+                    st.table(cm_df)
                 except Exception:
                     st.write(cm)
 
