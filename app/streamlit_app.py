@@ -2,6 +2,7 @@ import streamlit as st
 from pathlib import Path
 import subprocess
 import json
+from collections import Counter
 import sys
 
 # Ensure project root is importable when Streamlit runs this file as a script
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from models.predict import predict
+from data.preprocess import load_dataset, preprocess_df, clean_text, classify_token
 
 
 ARTIFACT_MODEL = Path("models/artifacts/logreg_baseline.joblib")
@@ -135,50 +137,13 @@ def main():
         seed = st.number_input("Seed", min_value=0, value=st.session_state.get("seed", 42), step=1, key="seed_input")
         threshold = st.slider("Decision threshold", min_value=0.0, max_value=1.0, value=st.session_state.get("threshold", 0.5), key="threshold_input")
 
-        # parameter profiles
-        profiles_dir = Path("profiles")
-        profiles_dir.mkdir(parents=True, exist_ok=True)
-        profile_files = sorted([p.name for p in profiles_dir.glob("*.json")])
-        profile_choice = st.selectbox("Profile", ["-- new --"] + profile_files, index=0)
-        profile_name = st.text_input("Profile name (for save)", value="", key="profile_name")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Save profile"):
-                name = profile_name.strip() or "default"
-                ppath = profiles_dir / f"{name}.json"
-                payload = {
-                    "label_col": lbl_col,
-                    "text_col": txt_col,
-                    "models_dir": models_dir,
-                    "max_features": int(max_feats),
-                    "seed": int(seed),
-                    "threshold": float(threshold),
-                }
-                ppath.write_text(json.dumps(payload, indent=2))
-                st.success(f"Saved profile {ppath}")
-        with col2:
-            if st.button("Load profile"):
-                if profile_choice != "-- new --":
-                    pdata = json.loads((profiles_dir / profile_choice).read_text())
-                    # update session state keys and rerun to refresh widgets
-                    st.session_state["label_col"] = pdata.get("label_col")
-                    st.session_state["text_col"] = pdata.get("text_col")
-                    st.session_state["models_dir"] = pdata.get("models_dir")
-                    st.session_state["max_features"] = int(pdata.get("max_features", 10000))
-                    st.session_state["seed"] = int(pdata.get("seed", 42))
-                    st.session_state["threshold"] = float(pdata.get("threshold", 0.5))
-                    try:
-                        st.experimental_rerun()
-                    except Exception:
-                        st.info("Profile loaded; please refresh the page to see updated values.")
-
         # persist into session state so run_training can pick them up
-        st.session_state["label_col"] = st.session_state.get("label_col", lbl_col)
-        st.session_state["text_col"] = st.session_state.get("text_col", txt_col)
-        st.session_state["models_dir"] = st.session_state.get("models_dir", models_dir)
-        st.session_state["max_features"] = int(st.session_state.get("max_features", max_feats))
-        st.session_state["seed"] = int(st.session_state.get("seed", seed))
-        st.session_state["threshold"] = float(st.session_state.get("threshold", threshold))
+        st.session_state["label_col"] = lbl_col
+        st.session_state["text_col"] = txt_col
+        st.session_state["models_dir"] = models_dir
+        st.session_state["max_features"] = int(max_feats)
+        st.session_state["seed"] = int(seed)
+        st.session_state["threshold"] = float(threshold)
 
         if st.button("Train baseline model"):
             run_training()
@@ -208,6 +173,107 @@ def main():
         st.write("This demo shows a Logistic Regression baseline for SMS spam classification. Use the left menu to choose a dataset, start training, and download artifacts.")
         st.subheader("Model status")
         show_model_status()
+        # Data overview: class distribution and token replacements
+        st.subheader("Data Overview")
+        # small CSS for card-style sections and font tweaks
+        st.markdown(
+            """
+            <style>
+            .card { background: #fbfdff; padding: 14px; border-radius:10px; box-shadow: 0 4px 16px rgba(11,95,255,0.06); }
+            .section-title { font-family: 'Helvetica Neue', Arial, sans-serif; color:#0b5fff; font-weight:600; }
+            .small-muted { color: #6c757d; font-size:0.9rem }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        data_path = st.session_state.get("uploaded_dataset_path", "data/sms_spam_no_header.csv")
+        try:
+            df_raw = load_dataset(data_path)
+            df_clean = preprocess_df(df_raw)
+
+            # class distribution (card)
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Class distribution</div>", unsafe_allow_html=True)
+            counts = df_clean["label"].value_counts()
+            st.bar_chart(counts)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # token replacements: map original token -> cleaned token where changed
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            st.markdown("<div class='section-title'>Token replacements in cleaned text (top 20)</div>", unsafe_allow_html=True)
+            mapping = Counter()
+            for orig_msg in df_raw["message"].astype(str).tolist():
+                for token in orig_msg.split():
+                    cleaned = clean_text(token)
+                    if cleaned and cleaned != token.lower():
+                        cat = classify_token(token)
+                        mapping[(token, cleaned, cat)] += 1
+
+            if mapping:
+                rows = [ {"original": k[0], "cleaned": k[1], "category": k[2], "count": v} for k, v in mapping.most_common(20) ]
+                st.table(rows)
+            else:
+                st.info("No token replacements detected or dataset empty.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
+            # Top tokens by class (ham vs spam)
+            try:
+                st.markdown("<div class='card'>", unsafe_allow_html=True)
+                st.markdown("<div class='section-title'>Top tokens by class</div>", unsafe_allow_html=True)
+                top_n = st.number_input("Top N tokens", min_value=5, max_value=50, value=10, key="top_n_tokens")
+
+                from collections import Counter as _Counter
+                import matplotlib.pyplot as plt
+                import numpy as _np
+
+                cnt_ham = _Counter()
+                cnt_spam = _Counter()
+                # df_clean messages are already cleaned (lowercased, punctuation removed), split on whitespace
+                for lbl, msg in df_clean[["label", "message"]].values:
+                    for tok in str(msg).split():
+                        if lbl == "ham":
+                            cnt_ham[tok] += 1
+                        else:
+                            cnt_spam[tok] += 1
+
+                ham_top = cnt_ham.most_common(int(top_n))
+                spam_top = cnt_spam.most_common(int(top_n))
+
+                # prepare side-by-side horizontal bar charts
+                if ham_top or spam_top:
+                    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+                    # ham chart
+                    if ham_top:
+                        toks_h = [t for t, c in reversed(ham_top)]
+                        counts_h = [c for t, c in reversed(ham_top)]
+                        axes[0].barh(toks_h, counts_h, color="#2b8cbe")
+                        axes[0].set_title("Top tokens — ham")
+                        axes[0].invert_yaxis()
+                    else:
+                        axes[0].text(0.5, 0.5, "No ham tokens", ha="center")
+
+                    # spam chart
+                    if spam_top:
+                        toks_s = [t for t, c in reversed(spam_top)]
+                        counts_s = [c for t, c in reversed(spam_top)]
+                        axes[1].barh(toks_s, counts_s, color="#f03b20")
+                        axes[1].set_title("Top tokens — spam")
+                        axes[1].invert_yaxis()
+                    else:
+                        axes[1].text(0.5, 0.5, "No spam tokens", ha="center")
+
+                    st.pyplot(fig)
+                else:
+                    st.info("No tokens found to display top tokens by class.")
+
+                st.markdown("</div>", unsafe_allow_html=True)
+            except Exception:
+                # non-fatal; do not break overview if plotting fails
+                pass
+        except Exception as e:
+            st.warning(f"Could not load dataset for overview: {e}")
 
     elif page == "Predict":
         st.header("Try a sample message")
@@ -239,11 +305,13 @@ def main():
         report = _read_report("models/artifacts")
         if report:
             st.subheader("Metrics")
-            # more prominent metrics
+            # wrap metrics in a card for visual emphasis
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
             c1.metric("Precision", f"{report.get('precision'):.3f}")
             c2.metric("Recall", f"{report.get('recall'):.3f}")
             c3.metric("F1", f"{report.get('f1'):.3f}")
+            st.markdown("</div>", unsafe_allow_html=True)
             cm = report.get("confusion_matrix")
             if cm:
                 try:
@@ -273,6 +341,61 @@ def main():
             params = {k: report.get(k) for k in ["threshold", "max_features", "seed"] if k in report}
             if params:
                 st.table(params.items())
+
+            # Model performance (threshold sweep) on current dataset
+            try:
+                st.subheader("Model performance (threshold sweep)")
+                from pathlib import Path as _Path
+                from joblib import load as _load
+                import numpy as _np
+                from sklearn.metrics import precision_recall_fscore_support
+                import pandas as _pd
+
+                vec_path = report.get("vectorizer_path") or "models/artifacts/tfidf_vectorizer.joblib"
+                model_path = report.get("model_path") or "models/artifacts/logreg_baseline.joblib"
+                p_vec = _Path(vec_path)
+                p_model = _Path(model_path)
+                if p_vec.exists() and p_model.exists():
+                    vec = _load(p_vec)
+                    clf = _load(p_model)
+
+                    # load dataset for evaluation (use cleaned messages)
+                    eval_path = st.session_state.get("uploaded_dataset_path", "data/sms_spam_no_header.csv")
+                    df_eval = preprocess_df(load_dataset(eval_path))
+                    X = vec.transform(df_eval["message"].astype(str).tolist())
+                    y = (df_eval["label"] == "spam").astype(int).values
+
+                    thresholds = list(_np.linspace(0.0, 1.0, 11))
+                    rows = []
+                    probs = None
+                    try:
+                        probs = clf.predict_proba(X)[:, 1]
+                    except Exception:
+                        # classifier may not support predict_proba
+                        try:
+                            probs = clf.decision_function(X)
+                            # scale to 0..1
+                            probs = (_np.tanh(probs) + 1) / 2
+                        except Exception:
+                            probs = None
+
+                    if probs is None:
+                        st.info("Model does not provide probabilities; threshold sweep unavailable.")
+                    else:
+                        for t in thresholds:
+                            preds = (probs >= t).astype(int)
+                            try:
+                                p, r, f, _ = precision_recall_fscore_support(y, preds, average="binary", zero_division=0)
+                            except Exception:
+                                p = r = f = 0.0
+                            rows.append({"threshold": round(float(t), 2), "precision": round(float(p), 3), "recall": round(float(r), 3), "f1": round(float(f), 3)})
+
+                        df_metrics = _pd.DataFrame(rows)
+                        st.table(df_metrics)
+                else:
+                    st.info("Model artifacts not found for threshold sweep.")
+            except Exception as e:
+                st.warning(f"Could not run threshold sweep: {e}")
         else:
             st.info("No report found. Run training to produce metrics.")
 

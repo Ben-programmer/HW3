@@ -3,6 +3,80 @@ from pathlib import Path
 import pandas as pd
 import re
 from typing import Tuple
+import string
+import unicodedata
+
+# small english stopword set (keeps local dependency-free)
+STOPWORDS = {
+    "the",
+    "and",
+    "is",
+    "in",
+    "it",
+    "of",
+    "to",
+    "a",
+    "you",
+    "for",
+    "on",
+    "this",
+    "that",
+    "with",
+    "as",
+    "are",
+    "was",
+    "be",
+}
+
+# emoji ranges (simple coverage for common emoji blocks)
+EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "]",
+    flags=re.UNICODE,
+)
+
+
+def classify_token(token: str) -> str:
+    """Classify a single token into one of:
+    'url', 'punctuation', 'stopword', 'digits', 'emoji', 'word', or 'other'.
+
+    This function is lightweight and dependency-free so it can be used in the
+    Streamlit app without extra packages.
+    """
+    if not token:
+        return "other"
+
+    t = str(token)
+    # URL-like
+    if re.match(r"https?://", t) or t.startswith("www."):
+        return "url"
+
+    # emoji heuristic
+    if EMOJI_RE.search(t):
+        return "emoji"
+
+    # digits (numbers, phone-like tokens)
+    if any(ch.isdigit() for ch in t) and all((ch.isdigit() or ch in "+-/() .") for ch in t):
+        return "digits"
+
+    # punctuation-only tokens
+    if all((ch in string.punctuation) for ch in t):
+        return "punctuation"
+
+    # normalized lower token for stopword lookup
+    low = t.lower().strip(string.punctuation)
+    if low in STOPWORDS:
+        return "stopword"
+
+    # fallback: if token contains letters it's a word
+    if any(ch.isalpha() for ch in t):
+        return "word"
+
+    return "other"
 
 
 def load_dataset(path: str) -> pd.DataFrame:
